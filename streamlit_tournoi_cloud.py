@@ -2,6 +2,7 @@ import streamlit as st
 import math
 import datetime
 import os
+import copy
 
 # --- Helper Function ---
 def get_ranked_standings(standings_list):
@@ -29,8 +30,9 @@ if 'stage' not in st.session_state:
     st.session_state.round_num = 1
     st.session_state.current_matchups = []
     st.session_state.benched_players = []
+    st.session_state.history = []
 
-st.header("🏆 Tournament Manager")
+st.header("🏆  Tournament Manager")
 
 # ==========================================
 # STAGE 1: CONFIGURATION
@@ -38,7 +40,7 @@ st.header("🏆 Tournament Manager")
 if st.session_state.stage == 'config':
     st.header("Tournament Setup")
     
-    game_type = st.selectbox("Choose Game Type:", ["babyfoot", "padel", "padel_mixed"])
+    game_type = st.selectbox("Choose Game Type:", ["padel", "padel_mixed", "babyfoot"])
     total_players = st.number_input("Total Number of Players:", min_value=4, step=1, value=4)
     
     if st.button("Next: Enter Players"):
@@ -183,6 +185,15 @@ elif st.session_state.stage == 'playing':
                         validation_passed = False
                         
             if validation_passed:
+
+                snapshot = copy.deepcopy(st.session_state.players)
+                st.session_state.history.append({
+                    'round_num': st.session_state.round_num,
+                    'players': snapshot,
+                    'matchups': st.session_state.current_matchups,
+                    'benched': st.session_state.benched_players
+                })
+
                 # Process Points
                 for team_a, team_b, score_a, score_b in scores_input:
                     for p in team_a:
@@ -224,6 +235,22 @@ elif st.session_state.stage == 'playing':
                 st.session_state.current_matchups = [] # Clears to trigger new matchmaking
                 st.rerun()
 
+
+
+
+    # UNDO BUTTON
+    if st.session_state.round_num > 1 and st.session_state.history:
+        if st.button("Undo (Fix Mistake)"):
+            # Retrieve the last snapshot
+            last_state = st.session_state.history.pop()
+            
+            # Restore all variables to their previous state
+            st.session_state.round_num = last_state['round_num']
+            st.session_state.players = last_state['players']
+            st.session_state.current_matchups = last_state['matchups']
+            st.session_state.benched_players = last_state['benched']
+            st.rerun()
+            
     st.divider()
     
     # Live Standings Table Display

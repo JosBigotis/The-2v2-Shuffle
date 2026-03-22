@@ -30,7 +30,7 @@ if 'stage' not in st.session_state:
     st.session_state.current_matchups = []
     st.session_state.benched_players = []
 
-st.title("🏆 Tournament Manager")
+st.header("🏆 Tournament Manager")
 
 # ==========================================
 # STAGE 1: CONFIGURATION
@@ -146,11 +146,7 @@ elif st.session_state.stage == 'playing':
                 team_a = (chunk[0], chunk[3])
                 team_b = (chunk[1], chunk[2])
                 
-            round_matches.append((team_a, team_b))
-            
-            # Increment played counter instantly so it's ready for next round's sort
-            for p in chunk:
-                st.session_state.players[p]['played'] += 1
+            round_matches.append((team_a, team_b)) 
                 
         st.session_state.current_matchups = round_matches
 
@@ -189,6 +185,11 @@ elif st.session_state.stage == 'playing':
             if validation_passed:
                 # Process Points
                 for team_a, team_b, score_a, score_b in scores_input:
+                    for p in team_a:
+                        st.session_state.players[p]['played'] += 1
+                    for p in team_b:
+                        st.session_state.players[p]['played'] += 1
+
                     # Raw stats
                     for p in team_a:
                         st.session_state.players[p]['points_won'] += score_a
@@ -250,42 +251,60 @@ elif st.session_state.stage == 'playing':
 # ==========================================
 elif st.session_state.stage == 'finished':
     st.header("🏁 Tournament Complete")
-    
+
     display_game = 'padel' if st.session_state.game_type in ('padel', 'padel_mixed') else st.session_state.game_type
     timestamp = datetime.datetime.now().strftime("%d-%m-%Y_%H-%M")
-    filename = f"{display_game}_standings_{timestamp}.txt"
-    
-    # Generate the text file content in memory instead of saving to the OS
-    file_content = "=" * 56 + "\n"
-    file_content += f"{'FINAL ' + display_game.upper() + ' STANDINGS':^56}\n"
-    file_content += f"{'Total Rounds: ' + str(st.session_state.round_num - 1):^56}\n"
-    file_content += "=" * 56 + "\n"
-    file_content += f"| {'Rank':<4} | {'Player':<12} | {'Pts':<3} | {'Diff':<4} | {'Won':<3} | {'Matches':<7} |\n"
-    file_content += "-" * 56 + "\n"
-    
-    # Re-calculate final standings for the file
+
+    # Calculate standings once
     standings = []
     for p_name, stats in st.session_state.players.items():
         standings.append((-stats['tourney_pts'], -stats['diff'], -stats['points_won'], stats['played'], p_name))
     standings.sort()
-    
+
     ranked_standings = get_ranked_standings(standings)
-    
-    for rank, item in ranked_standings: 
+
+    # 1. Generate TXT content
+    txt_filename = f"{display_game}_standings_{timestamp}.txt"
+    txt_content = "=" * 56 + "\n"
+    txt_content += f"{'FINAL ' + display_game.upper() + ' STANDINGS':^56}\n"
+    txt_content += f"{'Total Rounds: ' + str(st.session_state.round_num - 1):^56}\n"
+    txt_content += "=" * 56 + "\n"
+    txt_content += f"| {'Rank':<4} | {'Player':<12} | {'Pts':<3} | {'Diff':<4} | {'Won':<3} | {'Matches':<7} |\n"
+    txt_content += "-" * 56 + "\n"
+    for rank, item in ranked_standings:
         player_name = str(item[4])[:12]
-        file_content += f"| {rank:<4} | {player_name:<12} | {-item[0]:<3} | {-item[1]:<4} | {-item[2]:<3} | {item[3]:<7} |\n"
-        
-    file_content += "=" * 56 + "\n"
-    
-    # Serve the file directly to the user's browser
-    st.download_button(
-        label="📥 Download Final Standings (.txt)",
-        data=file_content,
-        file_name=filename,
-        mime="text/plain"
-    )
-    
+        txt_content += f"| {rank:<4} | {player_name:<12} | {-item[0]:<3} | {-item[1]:<4} | {-item[2]:<3} | {item[3]:<7} |\n"
+    txt_content += "=" * 56 + "\n"
+
+    # 2. Generate CSV content
+    csv_filename = f"{display_game}_standings_{timestamp}.csv"
+    csv_content = "Rank,Player,Pts,Diff,Won,Matches\n"
+    for rank, item in ranked_standings:
+        csv_content += f"{rank},{item[4]},{-item[0]},{-item[1]},{-item[2]},{item[3]}\n"
+
+    # 3. Display Download Buttons Side-by-Side
+    st.write("Choose your preferred download format:")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.download_button(
+            label="Download as .TXT",
+            data=txt_content,
+            file_name=txt_filename,
+            mime="text/plain"
+        )
+
+    with col2:
+        st.download_button(
+            label="Download as .CSV",
+            data=csv_content,
+            file_name=csv_filename,
+            mime="text/csv"
+        )
+
+    st.divider()
+
     # Reset capability
-    if st.button("Start New Tournament"):
+    if st.button("Start New Tournament", type="primary"):
         st.session_state.clear()
         st.rerun()

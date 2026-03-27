@@ -1,5 +1,3 @@
-#current 25/03/2026
-
 import streamlit as st
 import json
 import os
@@ -25,7 +23,7 @@ def cleanup_old_rooms():
 def save_room():
     if st.session_state.get('is_organizer') and st.session_state.get('room_code'):
         keys_to_save = ['stage', 'game_type', 'total_players', 'players', 'round_num', 'current_matchups', 
-                        'benched_players', 'history', 'completed_rounds', 'fanny_alert']
+                        'benched_players', 'history', 'completed_rounds', 'fanny_alert', 'roster_alert']
         data = {k: st.session_state[k] for k in keys_to_save if k in st.session_state}
         with open(os.path.join(ROOMS_DIR, f"{st.session_state.room_code}.json"), "w") as f:
             json.dump(data, f)
@@ -52,9 +50,51 @@ def get_ranked_standings(standings_list):
         actual_position += 1
     return ranked_list
 
+def calculate_cycle_info(players_dict):
+    """Calculates rounds until perfect equality and the subsequent stable cycle length."""
+    active_pool = [s['played'] for p, s in players_dict.items() if not s.get('retired', False)]
+    if not active_pool: return 0, 0, 0
+
+    N = len(active_pool)
+    P = (N // 4) * 4
+    if P == 0: return 0, 0, 0 
+
+    M_max = max(active_pool)
+    M_min = min(active_pool)
+    
+    # Base cycle math once stabilized
+    lcm_v = (P * N) // math.gcd(P, N) if P > 0 else 0
+    c_rounds = lcm_v // P if P > 0 else 0
+    c_matches = c_rounds * (N // 4) if P > 0 else 0
+
+    # If everyone is already equal, 0 rounds to catch up
+    if M_max == M_min:
+        return 0, c_rounds, c_matches
+        
+    # THE INFINITE LOOP FIX:
+    # If the number of players perfectly matches the available slots (4, 8, 12),
+    # no one is ever benched. Therefore, a new player can NEVER catch up mathematically.
+    if N == P:
+        return -1, c_rounds, c_matches
+
+    S_0 = sum(M_max - m for m in active_pool)
+
+    k = 0
+    # Hard fail-safe added to prevent server lockups
+    while k < 5000:
+        S = S_0 + k * N
+        if S % P == 0:
+            R = S // P
+            T = M_max + k
+            if R >= (T - M_min):
+                return R, c_rounds, c_matches
+        k += 1
+        
+    return -1, c_rounds, c_matches
+
 def render_downloads_and_podium(players, game_type, round_num, completed_rounds):
     st.subheader("🏆 Final Standings")
-    standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], p) for p, s in players.items()]
+    standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], f"{p} (Retired)" if s.get('retired', False) else p) for p, s in players.items()]
     standings.sort()
     ranked_standings = get_ranked_standings(standings)
     
@@ -63,7 +103,6 @@ def render_downloads_and_podium(players, game_type, round_num, completed_rounds)
         table_md += f"| {rank} | {item[4]} | {-item[0]} | {-item[1]} | {-item[2]} | {item[3]} |\n"
     st.markdown(table_md)
 
-    # --- ADVANCED POST-GAME STATS: BEST DUO ---
     if completed_rounds:
         duos = {}
         for rd in completed_rounds:
@@ -77,7 +116,6 @@ def render_downloads_and_podium(players, game_type, round_num, completed_rounds)
                     duos[duo]['matches'] += 1
         
         if duos:
-            # Ranks best duo by average point differential per match
             best_duo = max(duos.items(), key=lambda x: (x[1]['diff'] / x[1]['matches'], x[1]['pts']))
             duo_names, stats = best_duo
             st.success(f"🌟 **Best Duo:** {duo_names[0]} & {duo_names[1]} (+{stats['diff']} Diff across {stats['matches']} matches)")
@@ -147,6 +185,7 @@ if st.session_state.stage == 'landing':
             st.session_state.is_organizer = True
             st.query_params["host"] = st.session_state.room_code
             st.session_state.stage = 'config'
+            save_room() 
             st.rerun()
 
     with col2:
@@ -199,17 +238,14 @@ elif st.session_state.stage == 'config':
         st.session_state.completed_rounds = []
         st.session_state.undo_scores = []
         st.session_state.fanny_alert = False
+        st.session_state.roster_alert = ""
         st.session_state.stage = 'setup_players'
+        save_room()
         st.rerun()
-
-
-    
-
 
 elif st.session_state.stage == 'setup_players':
     st.header(f"Player Roster (Room: {st.session_state.room_code})")
 
-    # Calculate cycle info
     matches_per_round = st.session_state.total_players // 4
     active_players_per_round = matches_per_round * 4
     lcm_val = (active_players_per_round * st.session_state.total_players) // math.gcd(active_players_per_round, st.session_state.total_players)
@@ -247,8 +283,15 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
         st.warning("👇 **Allez hop, sous la table !**")
         st.session_state.fanny_alert = False
         save_room()
+
+    if st.session_state.get('roster_alert'):
+        if "⚠️" in st.session_state.roster_alert:
+            st.warning(st.session_state.roster_alert)
+        else:
+            st.success(st.session_state.roster_alert)
+        st.session_state.roster_alert = "" 
+        save_room()
     
-    # Dynamic Roster Math
     active_pool = [p for p, stats in st.session_state.players.items() if not stats.get('retired', False)]
     matches_per_round = len(active_pool) // 4
     active_players_per_round = matches_per_round * 4
@@ -279,8 +322,6 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
             round_matches.append((team_a, team_b))
         st.session_state.current_matchups = round_matches
         save_room()
-
-
 
     if st.session_state.benched_players:
         st.info(f"🪑 **Benched:** {', '.join(st.session_state.benched_players)}")
@@ -315,8 +356,8 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
                     'benched': st.session_state.benched_players
                 })
                 st.session_state.completed_rounds.append({'round_num': st.session_state.round_num, 'results': scores_input})
-                st.session_state.undo_scores = [] 
-                st.session_state.fanny_alert = False 
+                st.session_state.undo_scores = []  
+                st.session_state.fanny_alert = False  
                 
                 for team_a, team_b, score_a, score_b in scores_input:
                     if st.session_state.game_type == 'babyfoot':
@@ -349,7 +390,7 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
         if st.button("⚠️ Undo Last Round"):
             last_state = st.session_state.history.pop()
             last_scores = st.session_state.completed_rounds.pop()
-            st.session_state.undo_scores = last_scores['results'] 
+            st.session_state.undo_scores = last_scores['results']  
             st.session_state.round_num = last_state['round_num']
             st.session_state.players = last_state['players']
             st.session_state.current_matchups = last_state['matchups']
@@ -357,31 +398,61 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
             save_room()
             st.rerun()
             
+
     # --- DYNAMIC ROSTER (LATE ARRIVAL / EARLY EXIT) ---
-    #with st.expander("🔄 Manage Roster (Add / Retire Players)"):
     with st.expander("🛠️ Manage players"):
         c1, c2 = st.columns(2)
         with c1:
             st.write("**Add Late Player**")
-            new_name = st.text_input("Name", key="add_name").strip()
-            new_gender = st.selectbox("Gender", ['m', 'f'], key="add_gender") if st.session_state.game_type == 'padel_mixed' else None
-            if st.button("Add Player"):
-                if new_name and new_name not in st.session_state.players:
-                    st.session_state.players[new_name] = {'played': 0, 'tourney_pts': 0, 'diff': 0, 'points_won': 0, 'gender': new_gender, 'retired': False}
-                    save_room()
-                    st.success(f"{new_name} added! They will enter the matchmaking pool next round.")
-                    st.rerun()
-                elif new_name in st.session_state.players:
-                    st.error("Player already exists.")
+            # The form forces the text and the button to submit simultaneously
+            with st.form("add_player_form", clear_on_submit=True):
+                new_name = st.text_input("Name").strip()
+                new_gender = st.selectbox("Gender", ['m', 'f']) if st.session_state.game_type == 'padel_mixed' else None
+                submitted_add = st.form_submit_button("Add Player")
+                
+                if submitted_add:
+                    if new_name and new_name not in st.session_state.players:
+                        st.session_state.players[new_name] = {'played': 0, 'tourney_pts': 0, 'diff': 0, 'points_won': 0, 'gender': new_gender, 'retired': False}
+                        st.session_state.current_matchups = [] 
+                        
+                        catchup_r, c_rounds, c_matches = calculate_cycle_info(st.session_state.players)
+                        act_len = len([p for p, stats in st.session_state.players.items() if not stats.get('retired', False)])
+
+                        if catchup_r == -1:
+                            st.session_state.roster_alert = f"🔄 {new_name} added! Matchups updated instantly. ⚠️ With exactly {act_len} active players, no one sits out. The new player can never mathematically catch up."
+                        elif catchup_r > 0:
+                            st.session_state.roster_alert = f"🔄 {new_name} added! Matchups updated instantly. {catchup_r} rounds remaining for everyone to play equally, and then cycles will be {c_rounds} rounds ({c_matches} total matches)."
+                        else:
+                            st.session_state.roster_alert = f"🔄 {new_name} added! Matchups updated instantly. Everyone is currently perfectly equal! Future cycles will be {c_rounds} rounds ({c_matches} total matches)."
+                            
+                        save_room()
+                        st.rerun()
+                    elif new_name in st.session_state.players:
+                        st.error("Player already exists.")
         with c2:
             st.write("**Retire Player (Early Exit)**")
             if active_pool:
-                retire_name = st.selectbox("Select Player", active_pool, key="retire_name")
-                if st.button("Retire Player"):
-                    st.session_state.players[retire_name]['retired'] = True
-                    save_room()
-                    st.success(f"{retire_name} has been removed from future matches.")
-                    st.rerun()
+                with st.form("retire_player_form"):
+                    retire_name = st.selectbox("Select Player", active_pool)
+                    submitted_retire = st.form_submit_button("Retire Player")
+                    
+                    if submitted_retire:
+                        st.session_state.players[retire_name]['retired'] = True
+                        st.session_state.current_matchups = []
+                        
+                        catchup_r, c_rounds, c_matches = calculate_cycle_info(st.session_state.players)
+                        act_len = len([p for p, stats in st.session_state.players.items() if not stats.get('retired', False)])
+
+                        if catchup_r == -1:
+                            st.session_state.roster_alert = f"👋 {retire_name} retired. ⚠️ With exactly {act_len} active players, no one sits out. Any current gap in matches played cannot close mathematically."
+                        elif catchup_r > 0:
+                            st.session_state.roster_alert = f"👋 {retire_name} retired. Matchups updated instantly. {catchup_r} rounds remaining for everyone to play equally, and then cycles will be {c_rounds} rounds ({c_matches} total matches)."
+                        else:
+                            st.session_state.roster_alert = f"👋 {retire_name} retired. Matchups updated instantly. Everyone is currently perfectly equal! Future cycles will be {c_rounds} rounds ({c_matches} total matches)."
+                            
+                        save_room()
+                        st.rerun()
+
 
     # --- MANUAL MATCHMAKING OVERRIDE ---
     #with st.expander("🛠️ Manual Matchmaking Override"):
@@ -402,11 +473,10 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
                     save_room()
                     st.rerun()
 
-
     st.divider()
     
     st.subheader("Current Standings")
-    standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], p) for p, s in st.session_state.players.items() if not s.get('retired', False)]
+    standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], f"{p} (Retired)" if s.get('retired', False) else p) for p, s in st.session_state.players.items()]
     standings.sort()
     table_md = "| Rank | Player | Pts | Diff | Won | Matches |\n|---|---|---|---|---|---|\n"
     for rank, item in get_ranked_standings(standings):
@@ -421,7 +491,7 @@ elif st.session_state.stage == 'playing' and st.session_state.is_organizer:
                     st.text(f"  {team_a[0]} & {team_a[1]} ({score_a}) vs ({score_b}) {team_b[0]} & {team_b[1]}")
 
     st.write(f"📲 **Share live access. Code:** `{st.session_state.room_code}`")
-    app_url = f"https://2v2-shuffle.streamlit.app/?room={st.session_state.room_code}" 
+    app_url = f"https://2v2-shuffle.streamlit.app/?room={st.session_state.room_code}"  
     st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={app_url}", width=150)
     
     st.divider()
@@ -456,7 +526,14 @@ elif st.session_state.stage == 'viewing':
     else:
         st.header(f"Live View: Room {st.session_state.room_code}")
         
-        if room_data.get('stage') == 'finished':
+        if room_data.get('stage') == 'config':
+            st.info("The organizer is currently choosing the game settings...")
+            if st.button("🔄 Refresh Data"): st.rerun()
+        elif room_data.get('stage') == 'setup_players':
+            st.info("The organizer is currently entering player names. Stand by...")
+            if st.button("🔄 Refresh Data"): st.rerun()
+            
+        elif room_data.get('stage') == 'finished':
             st.success("🏁 The organizer has ended the tournament.")
             render_downloads_and_podium(room_data['players'], room_data['game_type'], room_data['round_num'], room_data.get('completed_rounds', []))
         else:
@@ -465,20 +542,20 @@ elif st.session_state.stage == 'viewing':
             with col2:
                 if st.button("🔄 Refresh Data"): st.rerun()
                     
-            if room_data['current_matchups']:
+            if room_data.get('current_matchups'):
                 st.subheader("Currently Playing")
                 for team_a, team_b in room_data['current_matchups']:
                     st.info(f"{team_a[0]} & {team_a[1]}  vs  {team_b[0]} & {team_b[1]}")
                     
             st.subheader("Standings")
-            standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], p) for p, s in room_data['players'].items() if not s.get('retired', False)]
+            standings = [(-s['tourney_pts'], -s['diff'], -s['points_won'], s['played'], f"{p} (Retired)" if s.get('retired', False) else p) for p, s in room_data['players'].items()]
             standings.sort()
             table_md = "| Rank | Player | Pts | Diff | Won | Matches |\n|---|---|---|---|---|---|\n"
             for rank, item in get_ranked_standings(standings):
                 table_md += f"| {rank} | {item[4]} | {-item[0]} | {-item[1]} | {-item[2]} | {item[3]} |\n"
             st.markdown(table_md)
             
-            if room_data['completed_rounds']:
+            if room_data.get('completed_rounds'):
                 with st.expander("📜 Match History"):
                     for round_data in reversed(room_data['completed_rounds']):
                         st.markdown(f"**Round {round_data['round_num']}**")
@@ -490,17 +567,3 @@ elif st.session_state.stage == 'viewing':
             st.session_state.clear()
             st.query_params.clear()
             st.rerun()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
